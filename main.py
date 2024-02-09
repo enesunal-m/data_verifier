@@ -3,15 +3,15 @@ import pandas as pd
 from sqlalchemy import create_engine
 from dotenv import load_dotenv
 import os
+import datetime
 
-def fetch_binance_data(symbol, interval, start_time, end_time):
+def fetch_binance_data(symbol, interval, start_time, end_time, data_count):
     base_url = "https://api.binance.com/api/v3/klines"
     params = {
         'symbol': symbol,
         'interval': interval,
-        'startTime': int(pd.Timestamp(start_time).timestamp() * 1000),
         'endTime': int(pd.Timestamp(end_time).timestamp() * 1000),
-        'limit': 10  # Adjust based on your needs
+        'limit': data_count  # Adjust based on your needs
     }
     response = requests.get(base_url, params=params)
     response.raise_for_status()
@@ -23,19 +23,19 @@ def fetch_binance_data(symbol, interval, start_time, end_time):
     data['Close Time'] = pd.to_datetime(data['Close Time'], unit='ms')
     return data
 
-def fetch_database_data(conn_details, view_name, start_time, end_time, symbol):
+def fetch_database_data(conn_details, view_name, start_time, end_time, symbol, data_count=1000):
     conn_str = f"postgresql+psycopg2://{conn_details['user']}:{conn_details['password']}@{conn_details['host']}:{conn_details['port']}/{conn_details['dbname']}"
     engine = create_engine(conn_str)
 
     query = f"""
     SELECT * FROM {view_name}
-    WHERE bucket >= %s AND bucket < %s and tickersymbol = %s
-    ORDER BY bucket ASC;
+    WHERE bucket >= %s and bucket < %s and tickersymbol = %s
+    ORDER BY bucket ASC LIMIT %s;
     """
-    print(start_time, end_time)
+
     # Use SQLAlchemy to execute the query and fetch data into a DataFrame
     with engine.connect() as connection:
-        df = pd.read_sql_query(query, connection, params=(start_time, end_time, symbol))
+        df = pd.read_sql_query(query, connection, params=(start_time, end_time, symbol, data_count))
 
     return df
 
@@ -57,24 +57,29 @@ def compare_data(df_binance, df_database):
     return mismatches
 
 def main():
-    load_dotenv
+    load_dotenv()
+
+    data_count = 8  # Adjust based on your needs
 
     symbol = 'BTCUSDT'  # Example symbol
-    interval = '3m'  # 1-minute interval
-    start_time = '2024-02-09 01:00:00'
-    end_time = '2024-02-09 01:30:00'
-    view_name = 'candle_3m'
+    interval = '4h'  # Example interval (3 minutes)
+    minute_interval = 60 * 4
+    end_time = '2024-02-09 11:00:00'
+    # Adjust the interval code to calculate the start_time correctly
+    start_time = pd.to_datetime(end_time) - pd.DateOffset(minutes=data_count * minute_interval)
+    start_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
+    view_name = 'candle_' + interval
     conn_details = {'dbname': os.getenv("DB_NAME"), 
                     'user': os.getenv("DB_USER"), 
                     'password': os.getenv("DB_PASSWORD"), 
                     'host': os.getenv("DB_HOST"), 
                     'port': os.getenv("DB_PORT")}
-
+    print(start_time, end_time)
     # Fetch data from Binance
-    df_binance = fetch_binance_data(symbol, interval, start_time, end_time)
+    df_binance = fetch_binance_data(symbol, interval, start_time, end_time, data_count)
 
     # Fetch data from your database
-    df_database = fetch_database_data(conn_details, view_name, start_time, end_time, symbol)
+    df_database = fetch_database_data(conn_details, view_name, start_time, end_time, symbol, data_count)
 
     # Compare the data
     mismatches = compare_data(df_binance, df_database)
